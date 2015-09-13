@@ -31,6 +31,8 @@
 %% gen_server callbacks
 -export([init/1, terminate/2, code_change/3, handle_call/3, handle_cast/2, handle_info/2]).
 
+-export([kill_me/1]).
+
 %%%===================================================================
 %%% API
 %%%===================================================================
@@ -50,6 +52,22 @@ cast(Process, Cast) -> gen_server:cast(Process, Cast).
 -spec age(wpool:name() | pid()) -> non_neg_integer().
 age(Process) -> gen_server:call(Process, age).
 
+-spec kill_me(pid()) -> ok.
+kill_me(Pid) ->
+    case process_info(Pid) of
+	undefined -> ok;
+	_ ->
+	    lager:error("forcing a kill of the process ~p", [Pid]),
+	    erlang:exit(Pid, kill)
+    end,
+    ok.
+
+-spec get_env(term(), term()) ->term().
+get_env(Key, Default) ->
+    case application:get_env(Key) of
+	undefined -> Default;
+	Value -> Value
+    end.
 %%%===================================================================
 %%% init, terminate, code_change, info callbacks
 %%%===================================================================
@@ -58,10 +76,20 @@ age(Process) -> gen_server:call(Process, age).
 init({Name, Mod, InitArgs, Options}) ->
   case Mod:init(InitArgs) of
     {ok, Mod_State} ->
-      ok = notify_queue_manager(new_worker, Name, Options),
-      {ok, #state{name = Name, mod = Mod, state = Mod_State, options = Options}};
-    ignore -> {stop, can_not_ignore};
-    Error -> Error
+	  ok = notify_queue_manager(new_worker, Name, Options),
+	  case get_env(aggresive_restarts, true) of
+	      true ->
+		  RestartInterval =  get_env(restart_interval, timer:seconds(10)),
+		  Offset = random:uniform(timer:seconds(1)),
+		  %% ask process nicely to restart
+		  timer:send_after(RestartInterval + Offset, restart),
+		  %% force a kill of the process
+		  timer:apply_after(2 * RestartInterval + Offset, ?MODULE, kill_me, [self()]);
+	      false -> ok
+	  end,
+	  {ok, #state{name = Name, mod = Mod, state = Mod_State, options = Options}};
+      ignore -> {stop, can_not_ignore};
+      Error -> Error
   end.
 
 %% @private
@@ -80,6 +108,8 @@ code_change(OldVsn, State, Extra) ->
 
 %% @private
 -spec handle_info(any(), #state{}) -> {noreply, #state{}} | {stop, term(), #state{}}.
+handle_info(restart, State) ->
+    {stop, restart, State};
 handle_info(Info, State) ->
   try (State#state.mod):handle_info(Info, State#state.state) of
     {noreply, NewState} -> {noreply, State#state{state = NewState}};
@@ -167,6 +197,8 @@ task_end(TimerRef) ->
 
 notify_queue_manager(Function, Name, Options) ->
   case proplists:get_value(queue_manager, Options) of
-    undefined -> ok;
+    undefined -> 
+	  lager:warning("Missing queue_manager ~p in options ~p", [Name, Options]),
+	  ok;
     QueueManager -> wpool_queue_manager:Function(QueueManager, Name)
   end.
