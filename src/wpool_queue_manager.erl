@@ -18,7 +18,7 @@
 -behaviour(gen_server).
 
 %% api
--export([start_link/2]).
+-export([start_link/2, start_link/3]).
 -export([available_worker/2, cast_to_available_worker/2,
          new_worker/2, worker_dead/2, worker_ready/2, worker_busy/2]).
 -export([pools/0, stats/1, proc_info/1, proc_info/2, trace/1, trace/3]).
@@ -28,19 +28,41 @@
 
 -include("wpool.hrl").
 
--record(state, {wpool                 :: wpool:name(),
-                clients               :: queue(),
-                workers               :: gb_sets:set(atom()),
-                born = os:timestamp() :: erlang:timestamp()
+-ifdef(namespaced_queues).
+-type client_queue() :: queue:queue().
+-type worker_queue() :: queue:queue().
+-type worker_set()   :: gb_sets:set(atom()).
+-else.
+-type client_queue() :: queue().
+-type worker_queue() :: queue().
+-type worker_set()   :: gb_sets:set(atom()).
+-endif.
+
+-type worker_collection_type() :: gb_sets | queue.
+
+-record(state, {wpool                  :: wpool:name(),
+                clients                :: client_queue(),
+                workers                :: worker_set() | worker_queue(),
+                born = os:timestamp()  :: erlang:timestamp(),
+                worker_collection_type :: worker_collection_type()
                }).
 -type state() :: #state{}.
 
 %%%===================================================================
 %%% API
 %%%===================================================================
+
+%%% Backwards compatible default to gb_sets for available workers.
 -spec start_link(wpool:name(), queue_mgr())
                 -> {ok, pid()} | {error, {already_started, pid()} | term()}.
-start_link(WPool, Name) -> gen_server:start_link({local, Name}, ?MODULE, WPool, []).
+start_link(WPool, Name) ->
+    start_link(WPool, Name, gb_sets).
+
+-spec start_link(wpool:name(), queue_mgr(), worker_collection_type())
+                -> {ok, pid()} | {error, {already_started, pid()} | term()}.
+start_link(WPool, Name, Worker_Collection_Type)
+  when Worker_Collection_Type =:= gb_sets; Worker_Collection_Type =:= queue ->
+    gen_server:start_link({local, Name}, ?MODULE, {WPool, Worker_Collection_Type}, []).
 
 -spec available_worker(queue_mgr(), timeout()) -> noproc | timeout | atom().
 available_worker(QueueManager, Timeout) ->
@@ -250,32 +272,38 @@ summarize_pending_times(Pool_Name) ->
 %%%===================================================================
 %%% gen_server callbacks
 %%%===================================================================
--spec init(wpool:name()) -> {ok, state()}.
-init(WPool) ->
-  put(pending_tasks, 0),
-  put(work_received, 0),
-  put(work_dispatched, 0),
-  put(new_workers_registered, 0),
-  put(work_expired, 0),
-  {ok, #state{wpool=WPool, clients=queue:new(), workers=gb_sets:new()}}.
+
+-spec init({wpool:name(), worker_collection_type()}) -> {ok, state()}.
+
+init({WPool, gb_sets})
+ when is_atom(WPool) ->
+  init_counters(),
+  {ok, #state{wpool=WPool, clients=queue:new(), workers=gb_sets:new(), worker_collection_type=gb_sets}};
+init({WPool, queue})
+ when is_atom(WPool) ->
+  init_counters(),
+  {ok, #state{wpool=WPool, clients=queue:new(), workers=queue:new(), worker_collection_type=queue}}.
+    
 
 -type worker_event() :: new_worker | worker_dead | worker_busy | worker_ready.
 -spec handle_cast({worker_event(), atom()}, state()) -> {noreply, state()}.
 handle_cast({new_worker, Worker}, State) ->
-    inc(new_workers_registered),
+    inc_new_workers_registered(),
     handle_cast({worker_ready, Worker}, State);
-handle_cast({worker_dead, Worker}, #state{workers=Workers} = State) ->
-  New_Workers = gb_sets:delete_any(Worker, Workers),
-  {noreply, State#state{workers=New_Workers}};
-handle_cast({worker_busy, Worker}, #state{workers=Workers} = State) ->
-  {noreply, State#state{workers = gb_sets:delete_any(Worker, Workers)}};
-handle_cast({worker_ready, Worker}, #state{workers=Workers, clients=Clients} = State) ->
+handle_cast({worker_dead, Worker}, #state{workers=Workers, worker_collection_type=WCT} = State) ->
+  {noreply, State#state{workers = remove_any(WCT, Worker, Workers)}};
+handle_cast({worker_busy, Worker}, #state{workers=Workers, worker_collection_type=WCT} = State) ->
+  {noreply, State#state{workers = remove_any(WCT, Worker, Workers)}};
+handle_cast({worker_ready, Worker}, #state{workers=Workers, worker_collection_type=WCT, clients=Clients} = State) ->
   case queue:out(Clients) of
     {empty, _Clients} ->
-      {noreply, State#state{workers = gb_sets:add(Worker, Workers)}};
+      case WCT of
+          gb_sets -> {noreply, State#state{workers = gb_sets:add (Worker, Workers)}};
+          queue   -> {noreply, State#state{workers = queue:in    (Worker, Workers)}}
+      end;
     {{value, {cast, Cast}}, New_Clients} ->
        dec_pending_tasks(),
-       inc(work_dispatched),
+       inc_work_dispatched(),
        ok = wpool_process:cast(Worker, Cast),
        {noreply, State#state{clients = New_Clients}};
     {{value, {Client = {ClientPid, _}, Expires}}, New_Clients} ->
@@ -283,24 +311,24 @@ handle_cast({worker_ready, Worker}, #state{workers=Workers, clients=Clients} = S
       New_State = State#state{clients = New_Clients},
       case is_process_alive(ClientPid) andalso Expires > now_in_microseconds() of
         true ->
-          inc(work_dispatched),
+          inc_work_dispatched(),
           _ = gen_server:reply(Client, {ok, Worker}),
           {noreply, New_State};
         false ->
-          inc(work_expired),
+          inc_work_expired(),
           handle_cast({worker_ready, Worker}, New_State)
       end
   end;
 handle_cast({cast_to_available_worker, Cast},
-            #state{workers=Workers, clients=Clients} = State) ->
-  inc(work_received),
-  case gb_sets:is_empty(Workers) of
+            #state{workers=Workers, worker_collection_type=WCT, clients=Clients} = State) ->
+  inc_work_received(),
+  case all_workers_busy(WCT, Workers) of
     true ->
       inc_pending_tasks(),
       {noreply, State#state{clients = queue:in({cast, Cast}, Clients)}};
     false ->
-      {Worker, New_Workers} = gb_sets:take_smallest(Workers),
-      inc(work_dispatched),
+      {Worker, New_Workers} = take_next_worker(WCT, Workers),
+      inc_work_dispatched(),
       ok = wpool_process:cast(Worker, Cast),
       {noreply, State#state{workers = New_Workers}}
   end.
@@ -312,28 +340,31 @@ handle_cast({cast_to_available_worker, Cast},
                  -> {reply, {ok, atom()}, state()} | {noreply, state()}.
 
 handle_call({available_worker, Expires}, Client = {ClientPid, _Ref},
-            #state{workers=Workers, clients=Clients} = State) ->
-  inc(work_received),
-  case gb_sets:is_empty(Workers) of
+            #state{workers=Workers, worker_collection_type=WCT, clients=Clients} = State) ->
+  inc_work_received(),
+  case all_workers_busy(WCT, Workers) of
     true ->
       inc_pending_tasks(),
       {noreply, State#state{clients = queue:in({Client, Expires}, Clients)}};
     false ->
-      {Worker, New_Workers} = gb_sets:take_smallest(Workers),
+      {Worker, New_Workers} = take_next_worker(WCT, Workers),
       %NOTE: It could've been a while since this call was made, so we check
       case erlang:is_process_alive(ClientPid) andalso Expires > now_in_microseconds() of
         true  -> 
-          inc(work_dispatched),
+          inc_work_dispatched(),
           {reply, {ok, Worker}, State#state{workers = New_Workers}};
         false -> 
-          inc(work_expired),
+          inc_work_expired(),
           {noreply, State}
       end
   end;
 handle_call(worker_counts, _From,
-            #state{workers=Available_Workers} = State) ->
-    Available = gb_sets:size(Available_Workers),
-    {reply, {Available, get(pending_tasks)}, State}.
+            #state{workers=Available_Workers, worker_collection_type=WCT} = State) ->
+    Available = case WCT of
+                    gb_sets -> gb_sets:size (Available_Workers);
+                    queue   -> queue:len    (Available_Workers)
+                end,
+    {reply, {Available, get_pending_tasks()}, State}.
 
 -spec handle_info(any(), state()) -> {noreply, state()}.
 handle_info(_Info, State) -> {noreply, State}.
@@ -348,8 +379,38 @@ code_change(_OldVsn, State, _Extra) -> {ok, State}.
 %%%===================================================================
 %%% private
 %%%===================================================================
-inc_pending_tasks() ->inc(pending_tasks).
+
+all_workers_busy(gb_sets, Workers) -> gb_sets:is_empty (Workers);
+all_workers_busy(queue,   Workers) -> queue:is_empty   (Workers).
+
+take_next_worker(gb_sets, Workers) ->
+    gb_sets:take_smallest(Workers);
+take_next_worker(queue,   Workers) ->
+    {{value, Worker}, New_Workers} = queue:out(Workers),
+    {Worker, New_Workers}.
+    
+remove_any(gb_sets, Element, Set) ->
+    gb_sets:delete_any(Element, Set);
+remove_any(queue, Element, Queue) ->
+    queue:filter(fun(E) -> E =/= Element end, Queue).
+                         
+
+%%% Process dictionary telemetry counters
+init_counters() ->
+  put(pending_tasks,          0),
+  put(work_received,          0),
+  put(work_dispatched,        0),
+  put(new_workers_registered, 0),
+  put(work_expired,           0).
+
+inc_pending_tasks() -> inc(pending_tasks).
 dec_pending_tasks() -> dec(pending_tasks).
+get_pending_tasks() -> get(pending_tasks).
+
+inc_work_received()   -> inc(work_received).
+inc_work_dispatched() -> inc(work_dispatched).
+inc_work_expired()    -> inc(work_expired).
+inc_new_workers_registered() -> inc(new_workers_registered).
 
 inc(Key) -> put(Key, get(Key) + 1).
 dec(Key) -> put(Key, get(Key) - 1).

@@ -31,9 +31,9 @@ run_tasks(TaskGroups, Strategy, Options) ->
         wpool:stop_pool(?MODULE)
     end.
 
-
 %% @doc Returns the transactions per second for simulated redis calls
 -spec run_redis(wpool:strategy(), [wpool:option()], string()) -> pos_integer().
+
 run_redis(Strategy, Options, Label) ->
     {ok, _Pool} = wpool:start_sup_pool(redis, Options),
     Num_Transactions = 10000,

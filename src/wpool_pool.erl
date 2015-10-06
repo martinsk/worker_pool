@@ -143,6 +143,7 @@ worker_names(Pool_Name) ->
 init({Name, Options}) ->
     {Worker, InitArgs}  = proplists:get_value(worker, Options, {wpool_worker, [{hibernate, always}]}),
     Workers             = proplists:get_value(workers, Options, 100),
+    Worker_Collection   = proplists:get_value(worker_collection_type, Options, gb_sets),
     Strategy            = proplists:get_value(strategy, Options, {one_for_one, 5, 60}),
     OverrunHandler      = proplists:get_value(overrun_handler, Options, {error_logger, warning_report}),
     TimeChecker         = time_checker_name(Name),
@@ -150,7 +151,7 @@ init({Name, Options}) ->
     _Wpool = store_wpool(#wpool{name = Name, size = Workers, next = 1, opts = Options, qmanager = QueueManager}),
     {ok, {Strategy,
           [{TimeChecker, {wpool_time_checker, start_link, [Name, TimeChecker, OverrunHandler]}, permanent, brutal_kill, worker, [wpool_time_checker]},
-           {QueueManager, {wpool_queue_manager, start_link, [Name, QueueManager]}, permanent, brutal_kill, worker, [wpool_queue_manager]} |
+           {QueueManager, {wpool_queue_manager, start_link, [Name, QueueManager, Worker_Collection]}, permanent, brutal_kill, worker, [wpool_queue_manager]} |
             [{worker_name(Name, I),
                 {wpool_process, start_link,
                  [worker_name(Name, I), Worker, InitArgs,

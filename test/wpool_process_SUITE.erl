@@ -71,7 +71,7 @@ cast(_Config) ->
 	wpool_process:cast(Pid, {noreply, newstate}),
 	newstate = wpool_process:call(?MODULE, state, 5000),
 	wpool_process:cast(Pid, {noreply, newerstate, 1}),
-	timer:sleep(1),
+	timer:sleep(50),
 	timeout = wpool_process:call(?MODULE, state, 5000),
 	wpool_process:cast(Pid, {stop, normal, state}),
 	timer:sleep(1000),
