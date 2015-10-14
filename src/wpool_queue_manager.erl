@@ -28,9 +28,19 @@
 
 -include("wpool.hrl").
 
+-ifdef(namespaced_queues).
+-type client_queue() :: queue:queue().
+-type worker_queue() :: queue:queue().
+-type worker_set()   :: gb_sets:set(atom()).
+-else.
+-type client_queue() :: queue().
+-type worker_queue() :: queue().
+-type worker_set()   :: gb_sets:set(atom()).
+-endif.
+
 -record(state, {wpool                 :: wpool:name(),
-                clients               :: queue(),
-                workers               :: set(),
+                clients               :: client_queue(),
+                workers               :: worker_set() | worker_queue(),
                 born = os:timestamp() :: erlang:timestamp()
                }).
 -type state() :: #state{}.
