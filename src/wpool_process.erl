@@ -56,12 +56,13 @@ age(Process) -> gen_server:call(Process, age).
 %% @private
 -spec init({atom(), atom(), term(), [wpool:option()]}) -> {ok, #state{}}.
 init({Name, Mod, InitArgs, Options}) ->
-  case Mod:init(InitArgs) of
-    {ok, Mod_State} ->
-      ok = notify_queue_manager(new_worker, Name, Options),
-      {ok, #state{name = Name, mod = Mod, state = Mod_State, options = Options}};
-    ignore -> {stop, can_not_ignore};
-    Error -> Error
+    case Mod:init(InitArgs) of
+	{ok, Mod_State} ->
+	    ok = notify_queue_manager(new_worker, Name, Options),
+	    init_resend_timer(),
+	    {ok, #state{name = Name, mod = Mod, state = Mod_State, options = Options}};
+	ignore -> {stop, can_not_ignore};
+	Error -> Error
   end.
 
 %% @private
@@ -80,6 +81,11 @@ code_change(OldVsn, State, Extra) ->
 
 %% @private
 -spec handle_info(any(), #state{}) -> {noreply, #state{}} | {stop, term(), #state{}}.
+handle_info(resend_ready, State) ->
+    ok = notify_queue_manager(worker_ready, State#state.name, State#state.options),
+    lager:info("Idle resubmitting worker_ready ~p", [State#state.name]),
+    init_resend_timer(),
+    {noreply, State};
 handle_info(Info, State) ->
   try (State#state.mod):handle_info(Info, State#state.state) of
     {noreply, NewState} -> {noreply, State#state{state = NewState}};
@@ -97,6 +103,7 @@ handle_info(Info, State) ->
 %% @private
 -spec handle_cast(term(), #state{}) -> {noreply, #state{}}.
 handle_cast(Cast, State) ->
+  stop_resend_timer(),
   Task = task_init({cast, Cast},
                    proplists:get_value(time_checker, State#state.options, undefined),
                    proplists:get_value(overrun_warning, State#state.options, infinity)),
@@ -113,6 +120,7 @@ handle_cast(Cast, State) ->
     end,
   task_end(Task),
   ok = notify_queue_manager(worker_ready, State#state.name, State#state.options),
+  init_resend_timer(),
   Reply.
 
 -type from() :: {pid(), reference()}.
@@ -121,6 +129,7 @@ handle_cast(Cast, State) ->
 handle_call(age, _From, #state{born=Born} = State) ->
     {reply, timer:now_diff(os:timestamp(), Born), State};
 handle_call(Call, From, State) ->
+  stop_resend_timer(),
   Task = task_init({call, Call},
                    proplists:get_value(time_checker, State#state.options, undefined),
                    proplists:get_value(overrun_warning, State#state.options, infinity)),
@@ -143,6 +152,7 @@ handle_call(Call, From, State) ->
     end,
   task_end(Task),
   ok = notify_queue_manager(worker_ready, State#state.name, State#state.options),
+  init_resend_timer(),
   Reply.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -151,19 +161,19 @@ handle_call(Call, From, State) ->
 %% @doc Marks Task as started in this worker
 -spec task_init(term(), atom(), infinity | pos_integer()) -> undefined | reference().
 task_init(Task, _TimeChecker, infinity) ->
-  erlang:put(wpool_task, {undefined, calendar:datetime_to_gregorian_seconds(calendar:universal_time()), Task}),
-  undefined;
+    erlang:put(wpool_task, {undefined, calendar:datetime_to_gregorian_seconds(calendar:universal_time()), Task}),
+    undefined;
 task_init(Task, TimeChecker, OverrunTime) ->
-  TaskId = erlang:make_ref(),
-  erlang:put(wpool_task, {TaskId, calendar:datetime_to_gregorian_seconds(calendar:universal_time()), Task}),
-  erlang:send_after(OverrunTime, TimeChecker, {check, self(), TaskId, OverrunTime}).
+    TaskId = erlang:make_ref(),
+    erlang:put(wpool_task, {TaskId, calendar:datetime_to_gregorian_seconds(calendar:universal_time()), Task}),
+    erlang:send_after(OverrunTime, TimeChecker, {check, self(), TaskId, OverrunTime}).
 
 %% @doc Removes the current task from the worker
 -spec task_end(undefined | reference()) -> ok.
 task_end(undefined) -> erlang:erase(wpool_task);
 task_end(TimerRef) ->
-  _ = erlang:cancel_timer(TimerRef),
-  erlang:erase(wpool_task).
+    _ = erlang:cancel_timer(TimerRef),
+    erlang:erase(wpool_task).
 
 notify_queue_manager(Function, Name, Options) ->
   case proplists:get_value(queue_manager, Options) of
@@ -172,3 +182,16 @@ notify_queue_manager(Function, Name, Options) ->
         ok;
     QueueManager -> wpool_queue_manager:Function(QueueManager, Name)
   end.
+
+
+init_resend_timer() ->
+    {ok, {_,ResendReadyRef}} = timer:send_after(timer:seconds(5), resend_ready),
+    erlang:put(resend_ready_ref, ResendReadyRef).
+    
+stop_resend_timer() ->
+    case erlang:get(resend_ready_ref) of
+	undefined -> ok;
+	ResendReadyRef ->
+	    _ = erlang:cancel_timer(ResendReadyRef),
+	    erlang:erase(resend_ready_ref)
+    end.
