@@ -83,7 +83,6 @@ code_change(OldVsn, State, Extra) ->
 -spec handle_info(any(), #state{}) -> {noreply, #state{}} | {stop, term(), #state{}}.
 handle_info(resend_ready, State) ->
     ok = notify_queue_manager(worker_ready, State#state.name, State#state.options),
-    lager:info("Idle resubmitting worker_ready ~p", [State#state.name]),
     init_resend_timer(),
     {noreply, State};
 handle_info(Info, State) ->
