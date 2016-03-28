@@ -40,11 +40,11 @@ start_link(Name, Module, InitArgs, Options) -> gen_server:start_link({local, Nam
 
 %% @equiv gen_server:call(Process, Call, Timeout)
 -spec call(wpool:name() | pid(), term(), timeout()) -> term().
-call(Process, Call, Timeout) -> gen_server:call(Process, Call, Timeout).
+call(Process, Call, Timeout) -> gen_server:call(Process, {Call, lager:md()}, Timeout).
 
 %% @equiv gen_server:cast(Process, Cast)
 -spec cast(wpool:name() | pid(), term()) -> ok.
-cast(Process, Cast) -> gen_server:cast(Process, Cast).
+cast(Process, Cast) -> gen_server:cast(Process, {Cast, lager:md()}).
 
 %% @doc Report how old a process is.
 -spec age(wpool:name() | pid()) -> non_neg_integer().
@@ -101,8 +101,9 @@ handle_info(Info, State) ->
 %%%===================================================================
 %% @private
 -spec handle_cast(term(), #state{}) -> {noreply, #state{}}.
-handle_cast(Cast, State) ->
+handle_cast({Cast, MetaData}, State) ->
   stop_resend_timer(),
+  lager:md(MetaData),
   Task = task_init({cast, Cast},
                    proplists:get_value(time_checker, State#state.options, undefined),
                    proplists:get_value(overrun_warning, State#state.options, infinity)),
@@ -127,8 +128,9 @@ handle_cast(Cast, State) ->
 -spec handle_call(term(), from(), #state{}) -> {reply, term(), #state{}}.
 handle_call(age, _From, #state{born=Born} = State) ->
     {reply, timer:now_diff(os:timestamp(), Born), State};
-handle_call(Call, From, State) ->
+handle_call({Call, MetaData}, From, State) ->
   stop_resend_timer(),
+  lager:md(MetaData),
   Task = task_init({call, Call},
                    proplists:get_value(time_checker, State#state.options, undefined),
                    proplists:get_value(overrun_warning, State#state.options, infinity)),
