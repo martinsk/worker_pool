@@ -115,7 +115,8 @@ stats(Sup) ->
                                      {task, Task},
                                      {runtime, calendar:datetime_to_gregorian_seconds(calendar:universal_time()) - Started}]
                             end,
-                        {T + MQL, [{N, WS} | L]}
+                        LoggingEnv = proplists:get_value('__lager_metadata', Dictionary),
+                        {T + MQL, [{N, WS ++ [{'logging_env', LoggingEnv}]} | L]}
                     end, {0, []}, lists:seq(1, Wpool#wpool.size)),
             ManagerStats = wpool_queue_manager:stats(Wpool#wpool.name),
             PendingTasks = proplists:get_value(pending_tasks, ManagerStats),

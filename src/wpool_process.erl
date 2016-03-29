@@ -121,6 +121,7 @@ handle_cast({Cast, MetaData}, State) ->
   task_end(Task),
   ok = notify_queue_manager(worker_ready, State#state.name, State#state.options),
   init_resend_timer(),
+  lager:md([]),
   Reply.
 
 -type from() :: {pid(), reference()}.
@@ -154,6 +155,7 @@ handle_call({Call, MetaData}, From, State) ->
   task_end(Task),
   ok = notify_queue_manager(worker_ready, State#state.name, State#state.options),
   init_resend_timer(),
+  lager:md([]),
   Reply.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
