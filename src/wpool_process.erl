@@ -188,7 +188,7 @@ notify_queue_manager(Function, Name, Options) ->
 
 
 init_resend_timer() ->
-    {ok, ResendReadyRef} = timer:send_after(timer:seconds(5), resend_ready),
+    {ok, ResendReadyRef} = timer:send_after(timer:seconds(2), resend_ready),
     erlang:put(resend_ready_ref, ResendReadyRef).
     
 stop_resend_timer() ->
