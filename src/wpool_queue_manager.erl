@@ -57,7 +57,9 @@ available_worker(QueueManager, Timeout) ->
   Expires =
     case Timeout of
       infinity -> infinity;
-      Timeout -> now_in_microseconds() + Timeout*1000
+      Timeout -> 
+           %% add 1 second reduction to avoid timeout to happening before expired message returns
+          now_in_microseconds() + ( Timeout - timer:seconds(1) )*1000 
     end,
   try gen_server:call(QueueManager, {available_worker, Expires}, Timeout) of
     {ok, Worker} -> Worker;
