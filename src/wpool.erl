@@ -105,7 +105,7 @@ call(Sup, Call, available_worker, Timeout) ->
     % exception should have been thrown
     % It may end up lower than 0, but not much lower, so we use abs to send
     % wpool_process a valid timeout value
-    NewTimeout = abs(Timeout - round(Elapsed/1000)),
+    NewTimeout = max(timer:seconds(1), abs(Timeout - round(Elapsed/1000))),
     wpool_process:call(Worker, Call, NewTimeout);
 call(Sup, Call, Strategy, Timeout) -> wpool_process:call(wpool_pool:Strategy(Sup), Call, Timeout).
 
