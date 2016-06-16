@@ -50,7 +50,9 @@
 %%%===================================================================
 -spec start_link(wpool:name(), queue_mgr())
                 -> {ok, pid()} | {error, {already_started, pid()} | term()}.
-start_link(WPool, Name) -> gen_server:start_link({local, Name}, ?MODULE, WPool, []).
+start_link(WPool, Name) -> 
+    wpool_stacktrace_counter:init(Name),
+    gen_server:start_link({local, Name}, ?MODULE, WPool, []).
 
 -spec available_worker(queue_mgr(), timeout()) -> noproc | timeout | atom().
 available_worker(QueueManager, Timeout) ->

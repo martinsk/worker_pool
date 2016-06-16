@@ -99,6 +99,7 @@ call(Sup, Call, Strategy) -> call(Sup, Call, Strategy, 5000).
 call(Sup, Call, available_worker, infinity) ->
     wpool_process:call(wpool_pool:available_worker(Sup, infinity), Call, infinity);
 call(Sup, Call, available_worker, Timeout) ->
+    wpool_stacktrace_counter:increment(Sup),
     {Elapsed, Worker} = timer:tc(wpool_pool, available_worker, [Sup, Timeout]),
     % Since the Timeout is a general constraint, we have to deduce the time
     % we spent waiting for a worker, and if it took it too much, no_workers
